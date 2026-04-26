@@ -1,19 +1,41 @@
 name: Deploy (CD)
 
 on:
-  push:
-    branches:
-      - main
+  workflow_run:
+    workflows:
+      - "Go Backend CI"
+      - "React Frontend CI"
+      - "Smart Contract CI (Rust/Soroban)"
+    types: [completed]
+    branches: [main]
 
-# Require all three CI jobs to pass before deploying
+# Require all three CI workflows to have passed for the same commit before deploying
 jobs:
   # ── Wait for CI to pass ──────────────────────────────────────────────────────
   check-ci:
     name: Wait for CI workflows
     runs-on: ubuntu-latest
+    # Only proceed when the triggering CI workflow itself succeeded
+    if: github.event.workflow_run.conclusion == 'success'
     steps:
-      - name: All CI checks passed — proceeding to deploy
-        run: echo "CI passed. Starting deployment..."
+      - name: Check all CI workflows passed for this commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          for workflow in "Go Backend CI" "React Frontend CI" "Smart Contract CI (Rust/Soroban)"; do
+            wf_id=$(gh api "/repos/$GITHUB_REPOSITORY/actions/workflows" \
+              --jq ".workflows[] | select(.name==\"$workflow\") | .id")
+            conclusion=$(gh api \
+              "/repos/$GITHUB_REPOSITORY/actions/workflows/$wf_id/runs?head_sha=$SHA&per_page=1" \
+              --jq '.workflow_runs[0].conclusion')
+            if [ "$conclusion" != "success" ]; then
+              echo "❌ $workflow conclusion: $conclusion — aborting deploy"
+              exit 1
+            fi
+            echo "✅ $workflow: success"
+          done
+          echo "All CI workflows passed — proceeding to deploy"
 
   # ── Deploy Frontend ──────────────────────────────────────────────────────────
   deploy-frontend:
