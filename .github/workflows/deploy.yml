@@ -2,31 +2,40 @@ name: Deploy (CD)
 
 on:
   workflow_run:
-    workflows: ["Go Backend CI", "React Frontend CI", "Smart Contract CI (Rust/Soroban)"]
+    workflows:
+      - "Go Backend CI"
+      - "React Frontend CI"
+      - "Smart Contract CI (Rust/Soroban)"
     types: [completed]
     branches: [main]
 
-# Require all three CI jobs to pass before deploying
+# Require all three CI workflows to have passed for the same commit before deploying
 jobs:
   # ── Wait for CI to pass ──────────────────────────────────────────────────────
   check-ci:
     name: Wait for CI workflows
     runs-on: ubuntu-latest
+    # Only proceed when the triggering CI workflow itself succeeded
     if: github.event.workflow_run.conclusion == 'success'
     steps:
-      - name: Check all CI workflows passed
+      - name: Check all CI workflows passed for this commit
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
-          SHA=${{ github.event.workflow_run.head_sha }}
           for workflow in "Go Backend CI" "React Frontend CI" "Smart Contract CI (Rust/Soroban)"; do
-            status=$(gh api "/repos/$GITHUB_REPOSITORY/actions/workflows" \
-              --jq ".workflows[] | select(.name==\"$workflow\") | .id" | \
-              xargs -I{} gh api "/repos/$GITHUB_REPOSITORY/actions/workflows/{}/runs?head_sha=$SHA&per_page=1" \
+            wf_id=$(gh api "/repos/$GITHUB_REPOSITORY/actions/workflows" \
+              --jq ".workflows[] | select(.name==\"$workflow\") | .id")
+            conclusion=$(gh api \
+              "/repos/$GITHUB_REPOSITORY/actions/workflows/$wf_id/runs?head_sha=$SHA&per_page=1" \
               --jq '.workflow_runs[0].conclusion')
-            [ "$status" = "success" ] || (echo "$workflow: $status - aborting" && exit 1)
+            if [ "$conclusion" != "success" ]; then
+              echo "❌ $workflow conclusion: $conclusion — aborting deploy"
+              exit 1
+            fi
+            echo "✅ $workflow: success"
           done
-          echo "All CI workflows passed!"
+          echo "All CI workflows passed — proceeding to deploy"
 
   # ── Deploy Frontend ──────────────────────────────────────────────────────────
   deploy-frontend:
